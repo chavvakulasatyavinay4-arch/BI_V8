@@ -1,0 +1,72 @@
+Expected SQL Outcomes
+----------------------------------------------------------------
+--•	Students who borrowed books from multiple categories
+select s.student_sk,count(*)
+from final_student_book_borrow_map m 
+join final_book_category_map bc on bc.book_sk = m.book_sk
+join final_students s on s.student_sk = m.student_sk
+group by s.student_sk
+having count(distinct bc.category_sk)>1;
+
+--Most borrowed books by category
+
+select c.category_name, b.title, count(*) as borrow_count
+from final_student_book_borrow_map m 
+join final_books b  on b.book_sk = m.book_sk
+join final_book_category_map bc on bc.book_sk = b.book_sk
+join final_categories c on c.category_sk = bc.category_sk
+group by c.category_name, b.title
+order by c.category_name, borrow_count desc;
+
+--Authors with books borrowed the most
+
+select a.author_name, count(*) as borrow_count
+from final_student_book_borrow_map m 
+join final_book_author_map ba on ba.book_sk = m.book_sk
+join final_authors a on a.author_sk = ba.author_sk
+group by author_name
+order by borrow_count desc;
+
+----Average borrow duration per student
+
+select s.student_sk,
+floor(AVG(DATEDIFF('day', borrow_date, COALESCE(return_date, CURRENT_TIMESTAMP()))),2) as avg_days
+from final_borrow_transactions t 
+join final_students s on s.student_sk = t.student_sk
+group by s.student_sk
+order by avg_days desc;
+
+--Students with overdue books
+SELECT s.student_sk, COUNT(*) AS overdue_cnt
+FROM final_borrow_transactions t
+JOIN final_students s ON s.student_sk = t.student_sk
+WHERE t.status = 'Overdue'
+GROUP BY s.student_sk
+ORDER BY overdue_cnt DESC;
+
+--•	Categories with highest circulation
+select c. category_sk, c.category_name,
+    count(bt.book_sk) as total_circulation
+from final_borrow_transactions bt
+join final_books b
+    on bt.book_sk = b.book_sk
+join final_book_category_map bcm
+    on b.book_sk = bcm.book_sk
+join final_categories c
+    on bcm.category_sk = c.category_sk
+group by c.category_sk, c.category_name
+order by  total_circulation DESC;
+
+--Ranking books by borrow frequency
+with bc as (
+  select b.book_sk, b.title, COUNT(*) as borrow_count
+  from final_student_book_borrow_map m
+  join final_books b on b.book_sk = m.book_sk
+  group by b.book_sk, b.title
+)
+select title, borrow_count,
+       rank() over (order by borrow_count desc) as borrow_rank
+from bc
+order by borrow_rank;
+
+
