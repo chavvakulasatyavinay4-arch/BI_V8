@@ -1,0 +1,152 @@
+Good catch—this error message is actually expected behavior with **task graphs**:
+
+> **“Unable to update graph with root task … TK\_CLEAN\_LOAD since that root task is not suspended.”**
+
+### What it means
+
+When you create **TK\_FINAL\_LOAD** with `AFTER TK_CLEAN_LOAD`, Snowflake forms a **task graph**. If you try to `RESUME` the child (**TK\_FINAL\_LOAD**), Snowflake attempts to **resume the entire graph from the root**. Because your **root task (TK\_CLEAN\_LOAD)** is **already resumed** (not suspended), Snowflake refuses to “update” the graph again—hence the error.
+
+This is how Snowflake Tasks work for graphs: you **resume/suspend the root** and Snowflake manages the children automatically. (Tasks can run on a schedule or via `EXECUTE TASK`; dependencies ensure order.) [\[docs.snowflake.com\]](https://docs.snowflake.com/en/user-guide/tasks-intro), [\[thinketl.com\]](https://thinketl.com/snowflake-tasks-execute-sql-statements-on-schedule/)
+
+***
+
+## ✅ What you should do now
+
+### 1) Don’t resume the child task
+
+Just **resume the root** (`TK_CLEAN_LOAD`) and leave **`TK_FINAL_LOAD`** alone.
+
+```sql
+-- Only the root needs resuming
+ALTER TASK TK_CLEAN_LOAD RESUME;
+
+-- Do NOT run: ALTER TASK TK_FINAL_LOAD RESUME;
+```
+
+### 2) (Optional) If you want to “reset” the graph
+
+Suspend the whole graph starting from the **root**, then resume the **root** only:
+
+```sql
+ALTER TASK TK_CLEAN_LOAD SUSPEND;
+-- no need to suspend the child explicitly
+
+ALTER TASK TK_CLEAN_LOAD RESUME;  -- this brings the full graph back
+```
+
+### 3) Run a one‑off execution immediately (no waiting for schedule)
+
+This is great for testing end‑to‑end right now:
+
+```sql
+-- Kicks off the graph: CLEAN runs; on success, FINAL runs.
+EXECUTE TASK TK_CLEAN_LOAD;
+```
+
+> Tip: If you try `EXECUTE TASK TK_FINAL_LOAD` directly, it will check its dependency; typically you start at the root. [\[docs.snowflake.com\]](https://docs.snowflake.com/en/user-guide/tasks-intro)
+
+### 4) Verify status & history
+
+```sql
+-- Current state (STATE column: 'started' means active; 'suspended' means paused)
+SHOW TASKS LIKE 'TK_%';
+
+-- Last runs and any errors (look at STATE, COMPLETED_TIME, ERROR_CODE/ERROR_MESSAGE)
+SELECT *
+FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY())
+ORDER BY SCHEDULED_TIME DESC
+LIMIT 50;
+```
+
+***
+
+## 🔎 Common gotchas (and quick fixes)
+
+1.  **Tasks created in a different schema**  
+    In your screenshot the worksheet shows **PUBLIC**. If you created tasks in `PUBLIC` but earlier code used other schemas, always **fully qualify** when managing tasks:
+
+    ```sql
+    ALTER TASK LIB_DB.PUBLIC.TK_CLEAN_LOAD RESUME;
+    EXECUTE TASK LIB_DB.PUBLIC.TK_CLEAN_LOAD;
+    SHOW TASKS IN SCHEMA LIB_DB.PUBLIC;
+    ```
+
+2.  **Warehouse privileges / availability**  
+    The task’s `WAREHOUSE = LIB_WH` must exist and be accessible to your role. If the task fails to start, check `TASK_HISTORY` error messages (e.g., warehouse not found / insufficient privileges). [\[docs.snowflake.com\]](https://docs.snowflake.com/en/user-guide/tasks-intro)
+
+3.  **Stored procedures must compile**  
+    If a task calls `CLEAN.SP_RUN_CLEAN_PIPELINE()` or `FINAL.SP_RUN_FINAL_PIPELINE()`, make sure those procedures exist and compile successfully. If they throw during execution, you’ll see the error in `TASK_HISTORY`.
+
+***
+
+## 🧪 Quick end‑to‑end test checklist (5 minutes)
+
+1.  **Resume only root**
+    ```sql
+    ALTER TASK LIB_DB.PUBLIC.TK_CLEAN_LOAD RESUME;
+    ```
+
+2.  **Execute now**
+    ```sql
+    EXECUTE TASK LIB_DB.PUBLIC.TK_CLEAN_LOAD;
+    ```
+
+3.  **Watch history**
+    ```sql
+    SELECT *
+    FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY())
+    WHERE NAME IN ('TK_CLEAN_LOAD','TK_FINAL_LOAD')
+    ORDER BY SCHEDULED_TIME DESC
+    LIMIT 20;
+    ```
+
+4.  **Validate row counts in FINAL**
+    ```sql
+    SELECT 'FINAL_STUDENTS', COUNT(*) FROM FINAL.FINAL_STUDENTS
+    UNION ALL SELECT 'FINAL_BOOKS', COUNT(*) FROM FINAL.FINAL_BOOKS
+    UNION ALL SELECT 'FINAL_AUTHORS', COUNT(*) FROM FINAL.FINAL_AUTHORS
+    UNION ALL SELECT 'FINAL_CATEGORIES', COUNT(*) FROM FINAL.FINAL_CATEGORIES
+    UNION ALL SELECT 'FINAL_BORROW_TRANSACTIONS', COUNT(*) FROM FINAL.FINAL_BORROW_TRANSACTIONS
+    UNION ALL SELECT 'FINAL_STUDENT_BOOK_BORROW_MAP', COUNT(*) FROM FINAL.FINAL_STUDENT_BOOK_BORROW_MAP
+    UNION ALL SELECT 'FINAL_BOOK_AUTHOR_MAP', COUNT(*) FROM FINAL.FINAL_BOOK_AUTHOR_MAP
+    UNION ALL SELECT 'FINAL_BOOK_CATEGORY_MAP', COUNT(*) FROM FINAL.FINAL_BOOK_CATEGORY_MAP;
+    ```
+
+***
+
+## Bonus: clean task creation example (for reference)
+
+```sql
+USE DATABASE LIB_DB;
+USE SCHEMA PUBLIC;
+USE WAREHOUSE LIB_WH;
+
+-- Root task: CLEAN every 15 minutes
+CREATE OR REPLACE TASK TK_CLEAN_LOAD
+  WAREHOUSE = LIB_WH
+  SCHEDULE = '15 MINUTES'
+AS
+CALL CLEAN.SP_RUN_CLEAN_PIPELINE();
+
+-- Child task: FINAL runs after CLEAN succeeds
+CREATE OR REPLACE TASK TK_FINAL_LOAD
+  WAREHOUSE = LIB_WH
+  AFTER TK_CLEAN_LOAD
+AS
+CALL FINAL.SP_RUN_FINAL_PIPELINE();
+
+-- Resume only the root
+ALTER TASK TK_CLEAN_LOAD RESUME;
+
+-- (No need to resume TK_FINAL_LOAD)
+```
+
+***
+
+### TL;DR
+
+*   **Don’t `RESUME` the child** in a task graph; **resume the root only**.
+*   Use `EXECUTE TASK` on the **root** for an immediate run.
+*   Check `TASK_HISTORY` for any runtime errors.
+
+If you paste the **`SHOW TASKS` output** and the **latest `TASK_HISTORY` rows**, I’ll read the exact states and tell you the next precise command to run.
